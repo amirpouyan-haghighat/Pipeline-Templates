@@ -1,0 +1,231 @@
+name: reusable-terraform
+
+on:
+  workflow_call:
+    inputs:
+      terraform_directory:
+        description: Relative path to the Terraform configuration root.
+        required: true
+        type: string
+        default: "."
+      terraform_version:
+        description: Terraform CLI version to install.
+        required: false
+        default: "latest"
+        type: string
+      pr_number:
+        description: Pull request number to comment against when running in plan-only mode.
+        required: false
+        type: string
+      plan_args:
+        description: Extra arguments to append to terraform plan.
+        required: false
+        default: ""
+        type: string
+      apply_args:
+        description: Extra arguments to append to terraform apply.
+        required: false
+        default: ""
+        type: string
+      run_apply:
+        description: Set to true when the workflow should execute terraform apply.
+        required: false
+        default: false
+        type: boolean
+      environment_name:
+        description: GitHub environment name used to gate terraform apply.
+        required: false
+        default: production
+        type: string
+      backend_state_file:
+        description: Terraform state file name stored under the backend container (repo name is added automatically).
+        required: false
+        default: "terraform.tfstate"
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  terraform_plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_SKIP_PROVIDER_REGISTRATION: "true"
+    outputs:
+      plan-summary: ${{ steps.format_plan.outputs.plan_summary }}
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Validate formatting
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform fmt -check
+
+      - name: Terraform init
+        working-directory: ${{ inputs.terraform_directory }}
+        env:
+          BACKEND_RESOURCE_GROUP: ${{ secrets.AZURE_BACKEND_RESOURCE_GROUP }}
+          BACKEND_STORAGE_ACCOUNT: ${{ secrets.AZURE_BACKEND_STORAGE_ACCOUNT }}
+          BACKEND_CONTAINER: ${{ secrets.AZURE_BACKEND_CONTAINER }}
+          BACKEND_STATE_FILE: ${{ inputs.backend_state_file }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        run: |
+          for var in BACKEND_RESOURCE_GROUP BACKEND_STORAGE_ACCOUNT BACKEND_CONTAINER; do
+            if [ -z "${!var}" ]; then
+              echo "Error: $var is required but not set." >&2
+              exit 1
+            fi
+          done
+          repo_name="${REPO_FULL_NAME##*/}"
+          state_file="${BACKEND_STATE_FILE:-terraform.tfstate}"
+          backend_key="${repo_name}/${state_file}"
+          terraform init \
+            -backend-config="resource_group_name=${BACKEND_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${BACKEND_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${BACKEND_CONTAINER}" \
+            -backend-config="key=${backend_key}"
+
+      - name: Terraform plan
+        id: plan
+        working-directory: ${{ inputs.terraform_directory }}
+        run: |
+          set -o pipefail
+          terraform plan -no-color ${{ inputs.plan_args }} | tee plan.log
+
+      - name: Summarize plan
+        id: format_plan
+        working-directory: ${{ inputs.terraform_directory }}
+        run: |
+          {
+            echo 'plan_summary<<EOF'
+            tail -n 200 plan.log
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan log
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-log
+          path: ${{ inputs.terraform_directory }}/plan.log
+          if-no-files-found: warn
+
+      - name: Comment plan on PR
+        if: inputs.pr_number != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = JSON.parse(${{ toJSON(steps.format_plan.outputs.plan_summary) }});
+            const body = [
+              '## Terraform plan results',
+              '',
+              '```',
+              summary.trim(),
+              '```',
+              '',
+              '> Full plan log is available as a workflow artifact.'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(${{ inputs.pr_number }}),
+              body
+            });
+
+  manual_approval:
+    name: Await Apply Approval
+    needs: terraform_plan
+    if: inputs.run_apply == true && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+    steps:
+      - name: Approval gate
+        run: echo "Approval granted for Terraform apply."
+
+  terraform_apply:
+    name: Terraform Apply
+    needs: manual_approval
+    if: inputs.run_apply == true && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_SKIP_PROVIDER_REGISTRATION: "true"
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Validate formatting
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform fmt -check
+
+      - name: Terraform init
+        working-directory: ${{ inputs.terraform_directory }}
+        env:
+          BACKEND_RESOURCE_GROUP: ${{ secrets.AZURE_BACKEND_RESOURCE_GROUP }}
+          BACKEND_STORAGE_ACCOUNT: ${{ secrets.AZURE_BACKEND_STORAGE_ACCOUNT }}
+          BACKEND_CONTAINER: ${{ secrets.AZURE_BACKEND_CONTAINER }}
+          BACKEND_STATE_FILE: ${{ inputs.backend_state_file }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        run: |
+          for var in BACKEND_RESOURCE_GROUP BACKEND_STORAGE_ACCOUNT BACKEND_CONTAINER; do
+            if [ -z "${!var}" ]; then
+              echo "Error: $var is required but not set." >&2
+              exit 1
+            fi
+          done
+          repo_name="${REPO_FULL_NAME##*/}"
+          state_file="${BACKEND_STATE_FILE:-terraform.tfstate}"
+          backend_key="${repo_name}/${state_file}"
+          terraform init \
+            -backend-config="resource_group_name=${BACKEND_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${BACKEND_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${BACKEND_CONTAINER}" \
+            -backend-config="key=${backend_key}"
+
+      - name: Terraform plan (apply run)
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform plan -no-color ${{ inputs.plan_args }}
+
+      - name: Terraform apply
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform apply -auto-approve ${{ inputs.apply_args }}
