@@ -35,13 +35,32 @@ on:
       environment_name:
         description: GitHub environment name used to gate terraform apply.
         required: false
-        default: production
+        default: Production
         type: string
       backend_state_file:
         description: Terraform state file name stored under the backend container (repo name is added automatically).
         required: false
         default: "terraform.tfstate"
         type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        description: Azure AD application (service principal) client ID for Terraform authentication.
+        required: true
+      AZURE_TENANT_ID:
+        description: Azure AD tenant ID that owns the service principal.
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: Azure subscription ID targeted by Terraform.
+        required: true
+      AZURE_BACKEND_RESOURCE_GROUP:
+        description: Resource group containing the remote state storage account.
+        required: true
+      AZURE_BACKEND_STORAGE_ACCOUNT:
+        description: Storage account name hosting the Terraform state container.
+        required: true
+      AZURE_BACKEND_CONTAINER:
+        description: Blob container name where Terraform state files are stored.
+        required: true
 
 permissions:
   contents: read
@@ -56,6 +75,9 @@ jobs:
   terraform_plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+
     env:
       ARM_USE_OIDC: "true"
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
