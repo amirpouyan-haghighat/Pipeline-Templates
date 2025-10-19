@@ -1,0 +1,36 @@
+name: terraform-prod
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+on:
+  pull_request:
+    paths:
+      - terraform/**
+  push:
+    branches:
+      - main
+    paths:
+      - terraform/**
+  workflow_dispatch:
+    inputs:
+      run_apply:
+        description: Override apply (true/false). Defaults to branch logic.
+        required: false
+        type: boolean
+
+jobs:
+  terraform:
+    uses: ./.github/workflows/terraform-reusable.yml
+    secrets: inherit
+    with:
+      terraform_directory: terraform/environments/prod
+      terraform_version: "1.7.5"
+      pr_number: ${{ github.event.pull_request.number || '' }}
+      plan_args: "-var-file=prod.tfvars"
+      apply_args: "-var-file=prod.tfvars"
+      run_apply: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' }}
+      environment_name: Production
+      backend_state_file: prod.tfstate
