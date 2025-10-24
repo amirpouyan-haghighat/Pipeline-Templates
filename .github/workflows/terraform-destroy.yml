@@ -1,0 +1,135 @@
+name: Terraform Destroy
+
+on:
+    workflow_call:
+        inputs:
+            working_directory:
+                description: Path with Terraform configuration.
+                required: false
+                type: string
+                default: "."
+            terraform_version:
+                description: Terraform version to use.
+                required: false
+                type: string
+                default: "1.7.5"
+            backend_resource_group:
+                description: Azure resource group containing the backend storage account.
+                required: true
+                type: string
+            backend_storage_account:
+                description: Azure Storage Account name for Terraform state.
+                required: true
+                type: string
+            backend_container_name:
+                description: Container name in the backend storage account.
+                required: false
+                type: string
+                default: "tfstate"
+            backend_key:
+                description: State key (blob name) in the backend container.
+                required: true
+                type: string
+            var_file:
+                description: Optional path to .tfvars file.
+                required: false
+                type: string
+                default: ""
+            environment:
+                description: GitHub environment name used for approval gate.
+                required: false
+                type: string
+                default: "destroy-approval"
+            plan_only:
+                description: Only plan destroy and stop before apply.
+                required: false
+                type: boolean
+                default: false
+            auto_approve:
+                description: Must be true to allow apply (safety switch).
+                required: false
+                type: boolean
+                default: false
+            delete_state:
+                description: Delete the Terraform state blob after successful destroy.
+                required: false
+                type: boolean
+                default: false
+        secrets:
+            azure_credentials:
+                required: true
+
+permissions:
+    contents: read
+    id-token: write
+
+jobs:
+    destroy:
+        name: Plan Destroy and Apply
+        runs-on: ubuntu-latest
+        environment: ${{ inputs.environment }}
+        defaults:
+            run:
+                shell: bash
+        env:
+            TF_IN_AUTOMATION: true
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Azure login
+              uses: azure/login@v1
+              with:
+                  creds: ${{ secrets.azure_credentials }}
+
+            - name: Setup Terraform
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: ${{ inputs.terraform_version }}
+
+            - name: Terraform Init (azurerm backend)
+              run: |
+                  terraform -chdir="${{ inputs.working_directory }}" init \
+                    -input=false \
+                    -backend-config="resource_group_name=${{ inputs.backend_resource_group }}" \
+                    -backend-config="storage_account_name=${{ inputs.backend_storage_account }}" \
+                    -backend-config="container_name=${{ inputs.backend_container_name }}" \
+                    -backend-config="key=${{ inputs.backend_key }}"
+
+            - name: Terraform Validate
+              run: terraform -chdir="${{ inputs.working_directory }}" validate
+
+            - name: Terraform Plan (destroy)
+              id: plan
+              run: |
+                  set -e
+                  cd "${{ inputs.working_directory }}"
+                  extra=""
+                  if [ -n "${{ inputs.var_file }}" ]; then
+                    extra="-var-file=${{ inputs.var_file }}"
+                  fi
+                  terraform plan -destroy -input=false -out=tfdestroy.plan $extra
+                  terraform show -no-color tfdestroy.plan > tfdestroy.txt
+
+            - name: Upload Destroy Plan
+              uses: actions/upload-artifact@v4
+              with:
+                  name: tf-destroy-plan
+                  path: ${{ inputs.working_directory }}/tfdestroy.txt
+
+            - name: Stop after plan (plan_only=true)
+              if: ${{ inputs.plan_only }}
+              run: |
+                  echo "Plan-only mode enabled. Skipping apply."
+                  exit 0
+            - name: Terraform Apply (destroy)
+              run: |
+                  terraform -chdir="${{ inputs.working_directory }}" apply -input=false -auto-approve tfdestroy.plan
+
+            - name: Cleanup local files
+              if: always()
+              run: |
+                  rm -f "${{ inputs.working_directory }}/tfdestroy.plan" || true
+                  rm -f "${{ inputs.working_directory }}/tfdestroy.txt" || true
