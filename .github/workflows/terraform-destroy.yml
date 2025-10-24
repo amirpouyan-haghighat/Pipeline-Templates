@@ -68,7 +68,7 @@ jobs:
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     outputs:
-      plan-summary: ${{ steps.format_plan.outputs.plan_summary }}
+      exitcode: ${{ steps.plan.outputs.exitcode }}
     steps:
       - name: Checkout configuration
         uses: actions/checkout@v4
@@ -84,6 +84,7 @@ jobs:
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
 
       - name: Validate formatting
         working-directory: ${{ inputs.terraform_directory }}
@@ -117,18 +118,12 @@ jobs:
         id: plan
         working-directory: ${{ inputs.terraform_directory }}
         run: |
-          set -o pipefail
-          terraform plan -destroy  ${{ inputs. args }} | tee plan.log
-
-      - name: Summarize plan
-        id: format_plan
-        working-directory: ${{ inputs.terraform_directory }}
-        run: |
-          {
-            echo 'plan_summary<<EOF'
-            tail -n 200 plan.log
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
+          set +e
+          terraform plan -detailed-exitcode -destroy -out plan.log ${{ inputs.args }}
+          exitcode="$?"
+          set -e
+          echo $exitcode
+          echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
 
       - name: Upload plan log
         uses: actions/upload-artifact@v4
@@ -141,7 +136,7 @@ jobs:
     name: Manual Approval
     runs-on: ubuntu-latest
     needs: terraform_plan
-    if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.terraform_plan.outputs.exitcode == 2
     environment:
       name: ${{ inputs.environment_name }}
 
@@ -160,8 +155,10 @@ jobs:
 
   terraform_apply:
     name: Terraform Apply
-    needs: manual_approval
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs:
+      - terraform_plan
+      - manual_approval
+    if: success()
     runs-on: ubuntu-latest
     environment:
       name: ${{ inputs.environment_name }}
@@ -185,6 +182,7 @@ jobs:
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
 
       - name: Validate formatting
         working-directory: ${{ inputs.terraform_directory }}
@@ -214,10 +212,6 @@ jobs:
             -backend-config="container_name=${BACKEND_CONTAINER}" \
             -backend-config="key=${backend_key}"
 
-      - name: Terraform plan (apply run)
-        working-directory: ${{ inputs.terraform_directory }}
-        run: terraform plan -destroy  ${{ inputs. args }}
-
       - name: Terraform apply
         working-directory: ${{ inputs.terraform_directory }}
-        run: terraform destroy -auto-approve ${{ inputs. args }}
+        run: terraform destroy -auto-approve ${{ inputs.args }}
