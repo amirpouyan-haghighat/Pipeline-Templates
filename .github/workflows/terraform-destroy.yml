@@ -1,135 +1,223 @@
-name: Terraform Destroy
+name: reusable-terraform
 
 on:
-    workflow_call:
-        inputs:
-            working_directory:
-                description: Path with Terraform configuration.
-                required: false
-                type: string
-                default: "."
-            terraform_version:
-                description: Terraform version to use.
-                required: false
-                type: string
-                default: "1.7.5"
-            backend_resource_group:
-                description: Azure resource group containing the backend storage account.
-                required: true
-                type: string
-            backend_storage_account:
-                description: Azure Storage Account name for Terraform state.
-                required: true
-                type: string
-            backend_container_name:
-                description: Container name in the backend storage account.
-                required: false
-                type: string
-                default: "tfstate"
-            backend_key:
-                description: State key (blob name) in the backend container.
-                required: true
-                type: string
-            var_file:
-                description: Optional path to .tfvars file.
-                required: false
-                type: string
-                default: ""
-            environment:
-                description: GitHub environment name used for approval gate.
-                required: false
-                type: string
-                default: "destroy-approval"
-            plan_only:
-                description: Only plan destroy and stop before apply.
-                required: false
-                type: boolean
-                default: false
-            auto_approve:
-                description: Must be true to allow apply (safety switch).
-                required: false
-                type: boolean
-                default: false
-            delete_state:
-                description: Delete the Terraform state blob after successful destroy.
-                required: false
-                type: boolean
-                default: false
-        secrets:
-            azure_credentials:
-                required: true
+  workflow_call:
+    inputs:
+      terraform_directory:
+        description: Relative path to the Terraform configuration root.
+        required: true
+        type: string
+        default: "."
+      terraform_version:
+        description: Terraform CLI version to install.
+        required: false
+        default: "latest"
+        type: string
+      args:
+        description: Extra arguments to append to terraform plan.
+        required: false
+        default: ""
+        type: string
+      environment_name:
+        description: GitHub environment name used to gate terraform apply.
+        required: false
+        default: Production
+        type: string
+      backend_state_file:
+        description: Terraform state file name stored under the backend container (repo name is added automatically).
+        required: false
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        description: Azure AD application (service principal) client ID for Terraform authentication.
+        required: true
+      AZURE_TENANT_ID:
+        description: Azure AD tenant ID that owns the service principal.
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: Azure subscription ID targeted by Terraform.
+        required: true
+      AZURE_BACKEND_RESOURCE_GROUP:
+        description: Resource group containing the remote state storage account.
+        required: true
+      AZURE_BACKEND_STORAGE_ACCOUNT:
+        description: Storage account name hosting the Terraform state container.
+        required: true
+      AZURE_BACKEND_CONTAINER:
+        description: Blob container name where Terraform state files are stored.
+        required: true
 
 permissions:
-    contents: read
-    id-token: write
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
 
 jobs:
-    destroy:
-        name: Plan Destroy and Apply
-        runs-on: ubuntu-latest
-        environment: ${{ inputs.environment }}
-        defaults:
-            run:
-                shell: bash
+  terraform_plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    outputs:
+      plan-summary: ${{ steps.format_plan.outputs.plan_summary }}
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Validate formatting
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform fmt -check
+
+      - name: Terraform init
+        working-directory: ${{ inputs.terraform_directory }}
         env:
-            TF_IN_AUTOMATION: true
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
+          BACKEND_RESOURCE_GROUP: ${{ secrets.AZURE_BACKEND_RESOURCE_GROUP }}
+          BACKEND_STORAGE_ACCOUNT: ${{ secrets.AZURE_BACKEND_STORAGE_ACCOUNT }}
+          BACKEND_CONTAINER: ${{ secrets.AZURE_BACKEND_CONTAINER }}
+          BACKEND_STATE_FILE: ${{ inputs.backend_state_file }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        run: |
+          for var in BACKEND_RESOURCE_GROUP BACKEND_STORAGE_ACCOUNT BACKEND_CONTAINER; do
+            if [ -z "${!var}" ]; then
+              echo "Error: $var is required but not set." >&2
+              exit 1
+            fi
+          done
+          repo_name="${REPO_FULL_NAME##*/}"
+          state_file="${BACKEND_STATE_FILE:-terraform.tfstate}"
+          backend_key="${repo_name}/${state_file}"
+          terraform init \
+            -backend-config="resource_group_name=${BACKEND_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${BACKEND_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${BACKEND_CONTAINER}" \
+            -backend-config="key=${backend_key}"
 
-            - name: Azure login
-              uses: azure/login@v1
-              with:
-                  creds: ${{ secrets.azure_credentials }}
+      - name: Terraform plan
+        id: plan
+        working-directory: ${{ inputs.terraform_directory }}
+        run: |
+          set -o pipefail
+          terraform plan -destroy  ${{ inputs. args }} | tee plan.log
 
-            - name: Setup Terraform
-              uses: hashicorp/setup-terraform@v3
-              with:
-                  terraform_version: ${{ inputs.terraform_version }}
+      - name: Summarize plan
+        id: format_plan
+        working-directory: ${{ inputs.terraform_directory }}
+        run: |
+          {
+            echo 'plan_summary<<EOF'
+            tail -n 200 plan.log
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
-            - name: Terraform Init (azurerm backend)
-              run: |
-                  terraform -chdir="${{ inputs.working_directory }}" init \
-                    -input=false \
-                    -backend-config="resource_group_name=${{ inputs.backend_resource_group }}" \
-                    -backend-config="storage_account_name=${{ inputs.backend_storage_account }}" \
-                    -backend-config="container_name=${{ inputs.backend_container_name }}" \
-                    -backend-config="key=${{ inputs.backend_key }}"
+      - name: Upload plan log
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-log
+          path: ${{ inputs.terraform_directory }}/plan.log
+          if-no-files-found: warn
 
-            - name: Terraform Validate
-              run: terraform -chdir="${{ inputs.working_directory }}" validate
+  manual_approval:
+    name: Manual Approval
+    runs-on: ubuntu-latest
+    needs: terraform_plan
+    if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    environment:
+      name: ${{ inputs.environment_name }}
 
-            - name: Terraform Plan (destroy)
-              id: plan
-              run: |
-                  set -e
-                  cd "${{ inputs.working_directory }}"
-                  extra=""
-                  if [ -n "${{ inputs.var_file }}" ]; then
-                    extra="-var-file=${{ inputs.var_file }}"
-                  fi
-                  terraform plan -destroy -input=false -out=tfdestroy.plan $extra
-                  terraform show -no-color tfdestroy.plan > tfdestroy.txt
+    permissions:
+      issues: write
 
-            - name: Upload Destroy Plan
-              uses: actions/upload-artifact@v4
-              with:
-                  name: tf-destroy-plan
-                  path: ${{ inputs.working_directory }}/tfdestroy.txt
+    steps:
+      - name: Await Manual Approval
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: amirpouyan-haghighat
+          minimum-approvals: 1
+          issue-title: "Manual Approval Required for Terraform Apply"
+          issue-body: "Please approve or deny the deployment."
 
-            - name: Stop after plan (plan_only=true)
-              if: ${{ inputs.plan_only }}
-              run: |
-                  echo "Plan-only mode enabled. Skipping apply."
-                  exit 0
-            - name: Terraform Apply (destroy)
-              run: |
-                  terraform -chdir="${{ inputs.working_directory }}" apply -input=false -auto-approve tfdestroy.plan
+  terraform_apply:
+    name: Terraform Apply
+    needs: manual_approval
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - name: Checkout configuration
+        uses: actions/checkout@v4
 
-            - name: Cleanup local files
-              if: always()
-              run: |
-                  rm -f "${{ inputs.working_directory }}/tfdestroy.plan" || true
-                  rm -f "${{ inputs.working_directory }}/tfdestroy.txt" || true
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Validate formatting
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform fmt -check
+
+      - name: Terraform init
+        working-directory: ${{ inputs.terraform_directory }}
+        env:
+          BACKEND_RESOURCE_GROUP: ${{ secrets.AZURE_BACKEND_RESOURCE_GROUP }}
+          BACKEND_STORAGE_ACCOUNT: ${{ secrets.AZURE_BACKEND_STORAGE_ACCOUNT }}
+          BACKEND_CONTAINER: ${{ secrets.AZURE_BACKEND_CONTAINER }}
+          BACKEND_STATE_FILE: ${{ inputs.backend_state_file }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        run: |
+          for var in BACKEND_RESOURCE_GROUP BACKEND_STORAGE_ACCOUNT BACKEND_CONTAINER; do
+            if [ -z "${!var}" ]; then
+              echo "Error: $var is required but not set." >&2
+              exit 1
+            fi
+          done
+          repo_name="${REPO_FULL_NAME##*/}"
+          state_file="${BACKEND_STATE_FILE:-terraform.tfstate}"
+          backend_key="${repo_name}/${state_file}"
+          terraform init \
+            -backend-config="resource_group_name=${BACKEND_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${BACKEND_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${BACKEND_CONTAINER}" \
+            -backend-config="key=${backend_key}"
+
+      - name: Terraform plan (apply run)
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform plan -destroy  ${{ inputs. args }}
+
+      - name: Terraform apply
+        working-directory: ${{ inputs.terraform_directory }}
+        run: terraform destroy -auto-approve ${{ inputs. args }}

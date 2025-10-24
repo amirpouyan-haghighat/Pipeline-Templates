@@ -13,13 +13,8 @@ on:
         required: false
         default: "latest"
         type: string
-      plan_args:
+      args:
         description: Extra arguments to append to terraform plan.
-        required: false
-        default: ""
-        type: string
-      apply_args:
-        description: Extra arguments to append to terraform apply.
         required: false
         default: ""
         type: string
@@ -31,7 +26,6 @@ on:
       backend_state_file:
         description: Terraform state file name stored under the backend container (repo name is added automatically).
         required: false
-        default: "terraform.tfstate"
         type: string
     secrets:
       AZURE_CLIENT_ID:
@@ -73,7 +67,6 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      ARM_SKIP_PROVIDER_REGISTRATION: "true"
     outputs:
       plan-summary: ${{ steps.format_plan.outputs.plan_summary }}
     steps:
@@ -125,7 +118,7 @@ jobs:
         working-directory: ${{ inputs.terraform_directory }}
         run: |
           set -o pipefail
-          terraform plan -no-color ${{ inputs.plan_args }} | tee plan.log
+          terraform plan  ${{ inputs. args }} | tee plan.log
 
       - name: Summarize plan
         id: format_plan
@@ -199,7 +192,6 @@ jobs:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      ARM_SKIP_PROVIDER_REGISTRATION: "true"
     steps:
       - name: Checkout configuration
         uses: actions/checkout@v4
@@ -246,8 +238,8 @@ jobs:
 
       - name: Terraform plan (apply run)
         working-directory: ${{ inputs.terraform_directory }}
-        run: terraform plan -no-color ${{ inputs.plan_args }}
+        run: terraform plan  ${{ inputs. args }}
 
       - name: Terraform apply
         working-directory: ${{ inputs.terraform_directory }}
-        run: terraform apply -auto-approve ${{ inputs.apply_args }}
+        run: terraform apply -auto-approve ${{ inputs. args }}

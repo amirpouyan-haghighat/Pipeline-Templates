@@ -1,15 +1,15 @@
 ### Terraform workflow inputs
 
-| Input | Required | Default | Notes |
-|-------|----------|---------|-------|
-| `terraform_directory` | yes | – | Relative path to the Terraform configuration. |
-| `terraform_version` | no | `1.6.6` | Override to pin the CLI version used. |
-| `pr_number` | no | – | Needed only when you want the plan posted as a PR comment. |
-| `plan_args` | no | – | Extra arguments appended to `terraform plan`. |
-| `apply_args` | no | – | Extra arguments appended to `terraform apply`. |
-| `run_apply` | no | `false` | Set to `true` to enable apply. |
-| `environment_name` | no | `production` | The GitHub environment used to gate the apply job. Configure required reviewers there. |
-| `backend_config_file` | no | – | Passed to `terraform init -backend-config`. |
+| Input                 | Required | Default      | Notes                                                                                  |
+| --------------------- | -------- | ------------ | -------------------------------------------------------------------------------------- |
+| `terraform_directory` | yes      | –            | Relative path to the Terraform configuration.                                          |
+| `terraform_version`   | no       | `1.6.6`      | Override to pin the CLI version used.                                                  |
+| `pr_number`           | no       | –            | Needed only when you want the plan posted as a PR comment.                             |
+| ` args`               | no       | –            | Extra arguments appended to `terraform plan`.                                          |
+| ` args`               | no       | –            | Extra arguments appended to `terraform apply`.                                         |
+| `run_apply`           | no       | `false`      | Set to `true` to enable apply.                                                         |
+| `environment_name`    | no       | `production` | The GitHub environment used to gate the apply job. Configure required reviewers there. |
+| `backend_config_file` | no       | –            | Passed to `terraform init -backend-config`.                                            |
 
 Optional secret:
 
@@ -21,7 +21,7 @@ Optional secret:
 2. Install Terraform via `hashicorp/setup-terraform@v2`.
 3. Run `terraform fmt -check` to enforce formatting.
 4. Run `terraform init` (optionally with backend config).
-5. Run `terraform plan -no-color`, capture the log, and upload it as an artifact.
+5. Run `terraform plan `, capture the log, and upload it as an artifact.
 6. If a PR number is supplied, comment the tail of the plan directly on the PR.
 7. When `run_apply` is true, repeat init/plan and execute `terraform apply -auto-approve` behind an environment gate.
 
