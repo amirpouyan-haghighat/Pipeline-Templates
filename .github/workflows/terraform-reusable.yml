@@ -58,6 +58,7 @@ permissions:
 env:
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "true"
+  TF_VAR_argocd_repo_password: ${{ secrets.REPO_PAT }}
 jobs:
   terraform_plan:
     name: Terraform Plan
@@ -137,7 +138,7 @@ jobs:
     name: Manual Approval
     runs-on: ubuntu-latest
     needs: terraform_plan
-    if: success() && needs.terraform_plan.outputs.exitcode == 2
+    if: success() && needs.terraform_plan.outputs.exitcode == 2 && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     environment:
       name: ${{ inputs.environment_name }}
 
@@ -215,4 +216,4 @@ jobs:
 
       - name: Terraform apply
         working-directory: ${{ inputs.terraform_directory }}
-        run: terraform apply -auto-approve ${{ inputs.args }} -var "argocd_repo_password=${{ secrets.REPO_PAT }}" -var "argocd_repo_username=x-access-token"
+        run: terraform apply -auto-approve ${{ inputs.args }}
