@@ -1,0 +1,194 @@
+name: container-workflow
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: Build context path relative to repository root.
+        required: false
+        default: "."
+        type: string
+      dockerfile:
+        description: Dockerfile path relative to repository root.
+        required: true
+        type: string
+      image_name:
+        required: true
+        type: string
+      registry_name:
+        required: true
+        type: string
+      release_branch:
+        description: Branch that triggers semantic-release and image push.
+        required: false
+        default: main
+        type: string
+      solution_language:
+        description: CodeQL language to analyze (for example csharp, go, javascript). Leave empty to skip.
+        required: false
+        default: ""
+        type: string
+      vulnerability_threshold:
+        description: Minimum vulnerability severity (comma separated) that should fail the build, for example HIGH,CRITICAL.
+        required: false
+        default: HIGH,CRITICAL
+        type: string
+      environment_name:
+        description: GitHub environment name used to gate terraform apply.
+        required: false
+        default: Production
+        type: string
+    secrets:
+      AZURE_CLIENT_ID:
+        description: Azure AD application (service principal) client ID for registry authentication.
+        required: true
+      AZURE_TENANT_ID:
+        description: Azure AD tenant ID that owns the service principal.
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        description: Azure subscription ID that contains the registry.
+        required: true
+      REPO_PAT:
+        description: Personal Access Token for accessing the ArgoCD configuration repository.
+        required: true
+permissions:
+  contents: write
+  id-token: write
+  security-events: write
+
+jobs:
+  build_and_push:
+    name: Build, Scan, and Release
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment_name }}
+    outputs:
+      release_version: ${{ steps.semantic.outputs.new_release_version }}
+      release_published: ${{ steps.semantic.outputs.new_release_published }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    env:
+      REGISTRY_LOGIN_SERVER: ${{ inputs.registry_name }}.azurecr.io
+      RELEASE_BRANCH_REF: refs/heads/${{ inputs.release_branch }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Validate PR title follows Conventional Commits
+        if: github.event_name == 'pull_request'
+        uses: amannn/action-semantic-pull-request@v5
+        with:
+          types: |
+            build
+            chore
+            ci
+            docs
+            feat
+            fix
+            perf
+            refactor
+            revert
+            style
+            test
+        env:
+          GITHUB_TOKEN: ${{ secrets.REPO_PAT }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare semantic-release config
+        if: github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF
+        run: |
+          cat <<EOF > .releaserc.json
+          {
+            "branches": [
+              "${RELEASE_BRANCH}"
+            ],
+            "plugins": [
+              "@semantic-release/commit-analyzer",
+              "@semantic-release/release-notes-generator",
+              [
+                "@semantic-release/github",
+                {
+                  "failTitle": false,
+                  "failComment": false
+                }
+              ]
+            ]
+          }
+          EOF
+        env:
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+
+      - name: Run semantic-release
+        id: semantic
+        if: github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF
+        uses: cycjimmy/semantic-release-action@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.REPO_PAT }}
+
+      - name: Azure login
+        if: github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log into ACR
+        if: github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF
+        run: az acr login --name ${{ inputs.registry_name }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_LOGIN_SERVER }}/${{ inputs.image_name }}
+          flavor: |
+            latest=${{ github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+            ${{ steps.semantic.outputs.new_release_version && format('type=semver,pattern={{version}},value={0}', steps.semantic.outputs.new_release_version) }}
+            ${{ steps.semantic.outputs.new_release_version && format('type=semver,pattern={{major}}.{{minor}},value={0}', steps.semantic.outputs.new_release_version) }}
+            ${{ steps.semantic.outputs.new_release_version && format('type=semver,pattern={{major}},value={0}', steps.semantic.outputs.new_release_version) }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Security scan image with Trivy
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.build.outputs.imageid }}
+          vuln-type: os,library
+          severity: ${{ inputs.vulnerability_threshold }}
+          exit-code: 1
+          ignore-unfixed: true
+          timeout: 10m
+
+      - name: Initialize CodeQL
+        if: github.event_name == 'pull_request' && inputs.solution_language != ''
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ inputs.solution_language }}
+
+      - name: Autobuild
+        if: github.event_name == 'pull_request' && inputs.solution_language != ''
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        if: github.event_name == 'pull_request' && inputs.solution_language != ''
+        uses: github/codeql-action/analyze@v3
