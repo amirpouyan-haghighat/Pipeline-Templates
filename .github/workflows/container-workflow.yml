@@ -52,6 +52,7 @@ on:
         description: Personal Access Token for accessing the ArgoCD configuration repository.
         required: true
 permissions:
+  actions: read
   contents: write
   id-token: write
   security-events: write
