@@ -70,10 +70,10 @@ jobs:
     outputs:
       exitcode: ${{ steps.plan.outputs.exitcode }}
     steps:
-      - name: Checkout configuration
+      - name: Checkout Configuration
         uses: actions/checkout@v4
 
-      - name: Azure login
+      - name: Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -86,11 +86,11 @@ jobs:
           terraform_version: ${{ inputs.terraform_version }}
           terraform_wrapper: false
 
-      - name: Validate formatting
+      - name: Validate Formatting
         working-directory: ${{ inputs.terraform_directory }}
         run: terraform fmt -check
 
-      - name: Terraform init
+      - name: Terraform Init
         working-directory: ${{ inputs.terraform_directory }}
         env:
           BACKEND_RESOURCE_GROUP: ${{ secrets.AZURE_BACKEND_RESOURCE_GROUP }}
@@ -114,7 +114,7 @@ jobs:
             -backend-config="container_name=${BACKEND_CONTAINER}" \
             -backend-config="key=${backend_key}"
 
-      - name: Terraform plan
+      - name: Terraform Plan
         id: plan
         working-directory: ${{ inputs.terraform_directory }}
         run: |
@@ -125,7 +125,7 @@ jobs:
           echo $exitcode
           echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
 
-      - name: Upload plan log
+      - name: Upload Plan Log
         uses: actions/upload-artifact@v4
         with:
           name: terraform-plan-log
@@ -153,8 +153,8 @@ jobs:
           issue-title: "Manual Approval Required for Terraform Apply"
           issue-body: "Please approve or deny the deployment."
 
-  terraform_apply:
-    name: Terraform Apply
+  terraform_destroy:
+    name: Terraform Destroy
     needs:
       - terraform_plan
       - manual_approval
@@ -168,7 +168,7 @@ jobs:
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     steps:
-      - name: Checkout configuration
+      - name: Checkout Configuration
         uses: actions/checkout@v4
 
       - name: Azure login
@@ -184,11 +184,11 @@ jobs:
           terraform_version: ${{ inputs.terraform_version }}
           terraform_wrapper: false
 
-      - name: Validate formatting
+      - name: Validate Formatting
         working-directory: ${{ inputs.terraform_directory }}
         run: terraform fmt -check
 
-      - name: Terraform init
+      - name: Terraform Init
         working-directory: ${{ inputs.terraform_directory }}
         env:
           BACKEND_RESOURCE_GROUP: ${{ secrets.AZURE_BACKEND_RESOURCE_GROUP }}
@@ -212,6 +212,6 @@ jobs:
             -backend-config="container_name=${BACKEND_CONTAINER}" \
             -backend-config="key=${backend_key}"
 
-      - name: Terraform apply
+      - name: Terraform Destroy
         working-directory: ${{ inputs.terraform_directory }}
         run: terraform destroy -auto-approve ${{ inputs.args }}

@@ -65,7 +65,7 @@ jobs:
       REGISTRY_LOGIN_SERVER: ${{ inputs.registry_name }}.azurecr.io
       RELEASE_BRANCH_REF: refs/heads/${{ inputs.release_branch }}
     steps:
-      - name: Checkout sources
+      - name: Checkout Sources
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -112,7 +112,7 @@ jobs:
         env:
           RELEASE_BRANCH: ${{ inputs.release_branch }}
 
-      - name: Run semantic-release
+      - name: Run Semantic Release
         id: semantic
         if: github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF
         uses: cycjimmy/semantic-release-action@v5
@@ -131,7 +131,7 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == env.RELEASE_BRANCH_REF
         run: az acr login --name ${{ inputs.registry_name }}
 
-      - name: Docker metadata
+      - name: Docker Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -157,7 +157,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Security scan image with Trivy
+      - name: Security Scan Image with Trivy
         id: trivy_scan
         if: github.event_name == 'pull_request'
         uses: aquasecurity/trivy-action@0.28.0
@@ -172,14 +172,14 @@ jobs:
           output: trivy-results.sarif
         continue-on-error: true
 
-      - name: Upload scan results
+      - name: Upload Scan Results
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: trivy-results
           path: trivy-results.sarif
 
-      - name: Generate scan summary
+      - name: Generate Scan Summary
         id: trivy_summary
         if: github.event_name == 'pull_request'
         shell: bash
@@ -226,7 +226,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Comment scan summary
+      - name: Comment Scan Summary
         if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:

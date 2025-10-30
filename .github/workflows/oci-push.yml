@@ -47,18 +47,18 @@ jobs:
         env:
             REGISTRY_LOGIN_SERVER: ${{ inputs.registry_name }}.azurecr.io
         steps:
-            - name: Checkout sources
+            - name: Checkout Sources
               uses: actions/checkout@v4
               with:
                   fetch-depth: 0
 
-            - name: Resolve artifact tag
+            - name: Resolve Artifact Tag
               id: resolve_tag
               run: |
                   tag="${GITHUB_SHA:0:12}"
                   echo "artifact_tag=$tag" >> "$GITHUB_OUTPUT"
 
-            - name: Azure login
+            - name: Azure Login
               uses: azure/login@v2
               with:
                   client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -71,7 +71,7 @@ jobs:
             - name: Set up ORAS CLI
               uses: oras-project/setup-oras@v1
 
-            - name: Package manifests
+            - name: Package Manifests
               run: |
                   if [ ! -d "${{ inputs.manifest_directory }}" ]; then
                     echo "Manifest directory '${{ inputs.manifest_directory }}' not found." >&2
@@ -79,7 +79,7 @@ jobs:
                   fi
                   tar -czf manifests.tgz -C "${{ inputs.manifest_directory }}" .
 
-            - name: Push manifests as OCI artifact
+            - name: Push Manifests as OCI Artifact
               run: |
                   oras push "${REGISTRY_LOGIN_SERVER}/${{ inputs.artifact_name }}:${{ steps.resolve_tag.outputs.artifact_tag }}" \
                     manifests.tgz:application/vnd.oci.image.layer.v1.tar+gzip
