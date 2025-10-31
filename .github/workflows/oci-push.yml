@@ -81,5 +81,8 @@ jobs:
 
             - name: Push Manifests as OCI Artifact
               run: |
-                  oras push "${REGISTRY_LOGIN_SERVER}/${{ inputs.artifact_name }}:${{ steps.resolve_tag.outputs.artifact_tag }}" \
+                  artifact_ref="${REGISTRY_LOGIN_SERVER}/${{ inputs.artifact_name }}"
+                  artifact_tag="${{ steps.resolve_tag.outputs.artifact_tag }}"
+                  oras push "${artifact_ref}:${artifact_tag}" \
                     manifests.tgz:application/vnd.oci.image.layer.v1.tar+gzip
+                  oras tag "${artifact_ref}:${artifact_tag}" latest
